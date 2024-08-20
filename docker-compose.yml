@@ -1,11 +1,29 @@
-version: '3.11'
+version: "3.7"
 
 volumes:
-  pinotController1:
-  pinotServer1:
-  mysql_data:  # Added a volume for MySQL data persistence
+  mysql-db:
+  spark-master-volume:
+  spark-worker-volume:
+  zookeeper-volume:
+  kafka-volume:
 
 services:
+  mysql:
+    image: mysql:5.7
+    container_name: mysql-5.7
+    restart: always
+    environment:
+      MYSQL_DATABASE: 'test'              # name of database
+      MYSQL_USER: 'sample'                # sample is the name of user
+      MYSQL_PASSWORD: 'password'          # password for sample user
+      MYSQL_ROOT_PASSWORD: 'password'     # password for root user
+    ports:
+      - '3306:3306'                       # host port 3306 is mapped to docker port 3306
+    expose:
+      - '3306'
+    volumes:
+      - mysql-db:/var/lib/mysql
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     hostname: zookeeper
@@ -16,11 +34,10 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     healthcheck:
-      test: ["CMD", "bash", "-c", "echo 'ruok' | nc localhost 2181"]
+      test: [ "CMD", "bash", "-c", "echo 'ruok' | nc localhost 2181" ]
       interval: 10s
       timeout: 5s
       retries: 5
-
   broker:
     image: confluentinc/cp-kafka:7.4.0
     hostname: broker
@@ -45,25 +62,30 @@ services:
       KAFKA_JMX_PORT: 9101
       KAFKA_JMX_HOSTNAME: localhost
     healthcheck:
-      test: ["CMD", "bash", "-c", 'nc -z localhost 9092']
+      test: [ "CMD", "bash", "-c", 'nc -z localhost 9092' ]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  mysql:
-    image: mysql:latest
-    container_name: mysql
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
     ports:
-      - "3307:3307"
+      - "9093:9093"
     environment:
-      MYSQL_ROOT_PASSWORD: 
-      MYSQL_DATABASE: voting
-      MYSQL_USER: root
-      MYSQL_PASSWORD: 
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     volumes:
-      - mysql_data:/var/lib/mysql  # Mount volume for data persistence
+      - kafka-volume:/var/lib/kafka
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "bash", "-c", 'nc -z localhost 9092']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,8 +95,12 @@ services:
     container_name: spark-master
     command: bin/spark-class org.apache.spark.deploy.master.Master
     ports:
-      - "9090:8080"
+      - "8080:8080"
       - "7077:7077"
+    volumes:
+      - spark-master-volume:/opt/spark
+    environment:
+      SPARK_MODE: master
 
   spark-worker:
     image: bitnami/spark:latest
@@ -82,8 +108,11 @@ services:
     command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     depends_on:
       - spark-master
+    ports:
+      - "8081:8081"
     environment:
-      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_CORES: 2
       SPARK_WORKER_MEMORY: 1g
-      SPARK_MASTER_URL: spark://spark-master:7077
+    volumes:
+      - spark-worker-volume:/opt/spark
